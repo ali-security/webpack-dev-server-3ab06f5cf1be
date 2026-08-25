@@ -3378,6 +3378,11 @@ declare class Server {
    * @private
    * @returns {void}
    */
+  private setupCrossOriginHeaderCheck;
+  /**
+   * @private
+   * @returns {void}
+   */
   private setupDevMiddleware;
   middleware:
     | import("webpack-dev-middleware").API<
@@ -3464,6 +3469,7 @@ declare class Server {
    * @param {{ [key: string]: string | undefined }} headers
    * @param {string} headerToCheck
    * @param {boolean} allowIP
+   * @param {boolean} validateHost
    * @returns {boolean}
    */
   private checkHeader;
