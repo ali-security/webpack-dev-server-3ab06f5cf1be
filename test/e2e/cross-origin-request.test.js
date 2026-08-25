@@ -368,3 +368,111 @@ describe("cross-origin resource policy header", () => {
     expect(res.headers["cross-origin-resource-policy"]).toBeUndefined();
   });
 });
+
+describe("cross-site request forgery on state-changing endpoints", () => {
+  const devServerPort = port1;
+
+  let server;
+
+  beforeEach(async () => {
+    const compiler = webpack(config);
+    server = new Server(
+      { port: devServerPort, allowedHosts: "auto" },
+      compiler
+    );
+
+    await server.start();
+  });
+
+  afterEach(async () => {
+    if (server) {
+      await server.stop();
+      // Allow the port to be fully released before the next test
+      await new Promise((resolve) => {
+        setTimeout(resolve, 100);
+      });
+      server = null;
+    }
+  });
+
+  function request(path, headers = {}) {
+    const http = require("http");
+    const url = `http://localhost:${devServerPort}${path}`;
+
+    return new Promise((resolve, reject) => {
+      const req = http.get(url, { headers }, (res) => {
+        let body = "";
+        res.on("data", (chunk) => {
+          body += chunk;
+        });
+        res.on("end", () => {
+          resolve({ status: res.statusCode, body });
+        });
+      });
+      req.on("error", reject);
+    });
+  }
+
+  for (const endpoint of [
+    "/webpack-dev-server/invalidate",
+    "/webpack-dev-server/open-editor",
+  ]) {
+    it(`should block cross-site requests to ${endpoint}`, async () => {
+      const res = await request(endpoint, {
+        "sec-fetch-mode": "cors",
+        "sec-fetch-site": "cross-site",
+      });
+
+      expect(res.status).toBe(403);
+    });
+
+    it(`should block same-site cross-origin requests to ${endpoint}`, async () => {
+      // A page on another port of `localhost` is same-site but cross-origin
+      const res = await request(endpoint, {
+        "sec-fetch-mode": "cors",
+        "sec-fetch-site": "same-site",
+      });
+
+      expect(res.status).toBe(403);
+    });
+
+    it(`should allow same-origin requests to ${endpoint}`, async () => {
+      const res = await request(endpoint, {
+        "sec-fetch-mode": "cors",
+        "sec-fetch-site": "same-origin",
+      });
+
+      expect(res.status).toBe(200);
+    });
+
+    it(`should allow user-initiated navigations to ${endpoint}`, async () => {
+      const res = await request(endpoint, { "sec-fetch-site": "none" });
+
+      expect(res.status).toBe(200);
+    });
+  }
+
+  it("should block requests with a cross-origin Origin and no Sec-Fetch metadata", async () => {
+    const res = await request("/webpack-dev-server/invalidate", {
+      origin: "http://evil.example",
+    });
+
+    expect(res.status).toBe(403);
+  });
+
+  it("should allow requests without Sec-Fetch metadata or Origin (e.g. curl)", async () => {
+    const res = await request("/webpack-dev-server/invalidate");
+
+    expect(res.status).toBe(200);
+  });
+
+  it("should not launch an editor for a cross-site open-editor request", async () => {
+    const res = await request(
+      "/webpack-dev-server/open-editor?fileName=does-not-exist.js",
+      { "sec-fetch-site": "cross-site" }
+    );
+
+    expect(res.status).toBe(403);
+    expect(res.body).toBe("Cross-Origin request blocked");
+  });
+});
