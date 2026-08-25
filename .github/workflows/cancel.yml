@@ -1,13 +1,5 @@
 name: Cancel
-on:
-  push:
-    branches:
-      - master
-      - next
-  pull_request:
-    branches:
-      - master
-      - next
+on: workflow_dispatch
 permissions: {} # none
 jobs:
   cancel:

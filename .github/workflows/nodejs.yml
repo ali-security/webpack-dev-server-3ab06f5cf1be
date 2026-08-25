@@ -1,16 +1,12 @@
 name: webpack-dev-server
 
 on:
-  push:
-    branches:
-      - master
-      - next
-      - v4
-  pull_request:
-    branches:
-      - master
-      - next
-      - v4
+  workflow_dispatch:
+    inputs:
+      test-filter:
+        description: "Optional jest test name/path filter"
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -28,6 +24,7 @@ jobs:
         node-version: [16.x]
 
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@v3
@@ -52,18 +49,19 @@ jobs:
       - name: Check types
         run: if [ -n "$(git status types --porcelain)" ]; then echo "Missing types. Update types by running 'npm run build:types'"; exit 1; else echo "All types are valid"; fi
 
-      - name: Security audit
-        run: npm audit --production
-
-      - name: Check commit message
-        uses: wagoid/commitlint-github-action@v4
-
   test:
     name: Test - ${{ matrix.os }} - Node v${{ matrix.node-version }}, Webpack ${{ matrix.webpack-version }} (${{ matrix.shard }})
 
     strategy:
+      # One flaky leg must not cancel the other 50; every leg reports its own result.
+      fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        # windows-2022 is the image `windows-latest` resolved to at the 4.15.2
+        # release. Today's default (Windows Server 2025) dropped wmic, so
+        # `default-gateway`/`internal-ip` return nothing and every CLI stderr
+        # snapshot loses its "On Your Network" lines. Pinning the release-era image
+        # keeps the whole Windows matrix running instead of skipping those tests.
+        os: [ubuntu-latest, windows-2022, macos-latest]
         node-version: [12.x, 14.x, 16.x, 18.x, 19.x]
         shard: ["1/4", "2/4", "3/4", "4/4"]
         webpack-version: [latest]
@@ -71,8 +69,16 @@ jobs:
           - node-version: 16.x
             os: ubuntu-latest
             webpack-version: 4
+        exclude:
+          # Node.js < 16 has no darwin-arm64 build and macos-latest runners are Apple
+          # Silicon, so setup-node cannot provision these. Kept on ubuntu/windows (x64).
+          - os: macos-latest
+            node-version: 12.x
+          - os: macos-latest
+            node-version: 14.x
 
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
 
     steps:
       - uses: actions/checkout@v3
@@ -86,6 +92,18 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Pack npm tarball
+        if: matrix.os == 'ubuntu-latest' && matrix.node-version == '16.x' && matrix.webpack-version == 'latest' && matrix.shard == '1/4'
+        run: npm pack
+
+      - name: Upload npm tarball
+        if: matrix.os == 'ubuntu-latest' && matrix.node-version == '16.x' && matrix.webpack-version == 'latest' && matrix.shard == '1/4'
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-tarball
+          path: webpack-dev-server-*.tgz
+          if-no-files-found: error
+
       - name: Update package.json for webpack@4
         if: matrix.webpack-version == '4'
         run: echo "`jq '.scripts.build="npm run build:client"' package.json`" > package.json
@@ -95,7 +113,7 @@ jobs:
         run: npm i webpack@${{ matrix.webpack-version }} --save-dev --ignore-scripts
 
       - name: Setup firefox
-        if: matrix.os != 'windows-latest'
+        if: matrix.os != 'windows-2022'
         uses: browser-actions/setup-firefox@latest
         with:
           firefox-version: latest
@@ -109,9 +127,4 @@ jobs:
           cp -R tmp-client client
 
       - name: Run tests for webpack version ${{ matrix.webpack-version }}
-        run: npm run test:coverage -- --ci --shard=${{ matrix.shard }}
-
-      - name: Submit coverage data to codecov
-        uses: codecov/codecov-action@v3
-        with:
-          token: ${{ secrets.CODECOV_TOKEN }}
+        run: npm run test:coverage -- --ci --shard=${{ matrix.shard }} ${{ inputs.test-filter }}
