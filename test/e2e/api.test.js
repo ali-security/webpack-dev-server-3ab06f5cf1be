@@ -837,7 +837,7 @@ describe("API", () => {
       tests.forEach((test) => {
         const headers = { host: test };
 
-        if (!server.checkHeader(headers, "host")) {
+        if (!server.checkHeader(headers, "host", true)) {
           throw new Error("Validation didn't pass");
         }
       });
