@@ -214,3 +214,157 @@ describe("cross-origin requests", () => {
     }
   });
 });
+
+// @see https://github.com/webpack/webpack-dev-server/security/advisories/GHSA-79cf-xcqc-c78w
+describe("cross-origin resource policy header", () => {
+  const devServerPort = port1;
+
+  let server;
+
+  afterEach(async () => {
+    if (server) {
+      await server.stop();
+      // Allow the port to be fully released before the next test
+      await new Promise((resolve) => {
+        setTimeout(resolve, 100);
+      });
+      server = null;
+    }
+  });
+
+  function request(url, headers = {}) {
+    const http = require("http");
+
+    return new Promise((resolve, reject) => {
+      const req = http.get(url, { headers }, (res) => {
+        let body = "";
+        res.on("data", (chunk) => {
+          body += chunk;
+        });
+        res.on("end", () => {
+          resolve({ status: res.statusCode, headers: res.headers, body });
+        });
+      });
+      req.on("error", reject);
+    });
+  }
+
+  it("should set Cross-Origin-Resource-Policy: same-origin by default", async () => {
+    const compiler = webpack(config);
+    server = new Server(
+      { port: devServerPort, allowedHosts: "auto" },
+      compiler
+    );
+
+    await server.start();
+
+    const res = await request(`http://localhost:${devServerPort}/main.js`);
+
+    expect(res.headers["cross-origin-resource-policy"]).toBe("same-origin");
+  });
+
+  it("should NOT set CORP header when allowedHosts is 'all'", async () => {
+    const compiler = webpack(config);
+    server = new Server({ port: devServerPort, allowedHosts: "all" }, compiler);
+
+    await server.start();
+
+    const res = await request(`http://localhost:${devServerPort}/main.js`);
+
+    expect(res.headers["cross-origin-resource-policy"]).toBeUndefined();
+  });
+
+  it("should NOT set CORP header when user configures wildcard CORS", async () => {
+    const compiler = webpack(config);
+    server = new Server(
+      {
+        port: devServerPort,
+        allowedHosts: "auto",
+        headers: { "Access-Control-Allow-Origin": "*" },
+      },
+      compiler
+    );
+
+    await server.start();
+
+    const res = await request(`http://localhost:${devServerPort}/main.js`);
+
+    expect(res.headers["cross-origin-resource-policy"]).toBeUndefined();
+  });
+
+  it("should set CORP header when user configures a specific-origin Access-Control-Allow-Origin (no-cors embedding is not governed by CORS)", async () => {
+    const compiler = webpack(config);
+    server = new Server(
+      {
+        port: devServerPort,
+        allowedHosts: "auto",
+        headers: {
+          "Access-Control-Allow-Origin": "http://foo.example.com",
+        },
+      },
+      compiler
+    );
+
+    await server.start();
+
+    const res = await request(`http://localhost:${devServerPort}/main.js`);
+
+    expect(res.headers["cross-origin-resource-policy"]).toBe("same-origin");
+  });
+
+  it("should set CORP header when user configures Access-Control-Allow-Origin via headers array with a specific origin", async () => {
+    const compiler = webpack(config);
+    server = new Server(
+      {
+        port: devServerPort,
+        allowedHosts: "auto",
+        headers: [
+          {
+            key: "Access-Control-Allow-Origin",
+            value: "http://foo.example.com",
+          },
+        ],
+      },
+      compiler
+    );
+
+    await server.start();
+
+    const res = await request(`http://localhost:${devServerPort}/main.js`);
+
+    expect(res.headers["cross-origin-resource-policy"]).toBe("same-origin");
+  });
+
+  it("should NOT set CORP header when user configures wildcard Access-Control-Allow-Origin via headers array", async () => {
+    const compiler = webpack(config);
+    server = new Server(
+      {
+        port: devServerPort,
+        allowedHosts: "auto",
+        headers: [{ key: "Access-Control-Allow-Origin", value: "*" }],
+      },
+      compiler
+    );
+
+    await server.start();
+
+    const res = await request(`http://localhost:${devServerPort}/main.js`);
+
+    expect(res.headers["cross-origin-resource-policy"]).toBeUndefined();
+  });
+
+  it("should NOT set CORP header when host is in allowedHosts", async () => {
+    const compiler = webpack(config);
+    server = new Server(
+      { port: devServerPort, allowedHosts: ["localhost"] },
+      compiler
+    );
+
+    await server.start();
+
+    const res = await request(`http://localhost:${devServerPort}/main.js`);
+
+    expect(res.status).toBe(200);
+    expect(res.headers["cross-origin-resource-policy"]).toBeUndefined();
+  });
+});

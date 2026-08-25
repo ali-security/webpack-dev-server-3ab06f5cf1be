@@ -3475,6 +3475,12 @@ declare class Server {
   private checkHeader;
   /**
    * @private
+   * @returns {boolean} true when the user has configured a wildcard
+   * Access-Control-Allow-Origin header (opting into fully open cross-origin access)
+   */
+  private isUserCORSWildcardEnabled;
+  /**
+   * @private
    * @param {{ [key: string]: string | undefined }} headers
    * @returns {boolean}
    */
