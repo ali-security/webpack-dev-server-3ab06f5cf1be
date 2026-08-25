@@ -476,3 +476,175 @@ describe("cross-site request forgery on state-changing endpoints", () => {
     expect(res.body).toBe("Cross-Origin request blocked");
   });
 });
+
+describe("malformed Host/Origin headers", () => {
+  const devServerPort = port1;
+
+  // The invalid IPv6 literal from the upstream report, which makes the legacy
+  // `url.parse` throw while the `Host`/`Origin` header is validated.
+  const malformedHost = "[::1";
+  const malformedOrigin = "http://[::1/";
+
+  let server;
+
+  beforeEach(async () => {
+    const compiler = webpack(config);
+    server = new Server(
+      { port: devServerPort, allowedHosts: "auto" },
+      compiler
+    );
+
+    await server.start();
+  });
+
+  afterEach(async () => {
+    if (server) {
+      await server.stop();
+      // Allow the port to be fully released before the next test
+      await new Promise((resolve) => {
+        setTimeout(resolve, 100);
+      });
+      server = null;
+    }
+  });
+
+  function request(path, headers = {}) {
+    const http = require("http");
+    const url = `http://localhost:${devServerPort}${path}`;
+
+    return new Promise((resolve, reject) => {
+      const req = http.get(url, { headers }, (res) => {
+        let body = "";
+        res.on("data", (chunk) => {
+          body += chunk;
+        });
+        res.on("end", () => {
+          resolve({ status: res.statusCode, body });
+        });
+      });
+      req.on("error", reject);
+    });
+  }
+
+  function openWebSocket(headers) {
+    const WebSocket = require("ws");
+
+    return new Promise((resolve) => {
+      const messages = [];
+      const ws = new WebSocket(`ws://localhost:${devServerPort}/ws`, {
+        headers,
+      });
+
+      ws.on("message", (data) => {
+        messages.push(JSON.parse(data.toString()));
+      });
+      ws.on("close", () => {
+        resolve(messages);
+      });
+      ws.on("error", () => {
+        resolve(messages);
+      });
+    });
+  }
+
+  it("should send header values the legacy url-parser rejects", () => {
+    const url = require("url");
+    const nodeMajor = Number(process.versions.node.split(".")[0]);
+
+    // The parser only rejects these values from Node.js 18 on, which added a
+    // forbidden-host-character check to it. On older versions the same values
+    // merely resolve to a hostname that is not allowed, so the tests below are
+    // a regression test for the thrown-parser-error crash on Node.js >= 18 and
+    // a plain "not an allowed host" test everywhere else.
+    if (nodeMajor < 18) {
+      return;
+    }
+
+    expect(() => url.parse(`//${malformedHost}`, false, true)).toThrow();
+    expect(() => url.parse(malformedOrigin, false, true)).toThrow();
+  });
+
+  it("should reject a WebSocket upgrade with a malformed Origin header", async () => {
+    // Parsing the `Origin` used to throw inside the "connection" handler, an
+    // uncaught exception that took the whole dev-server process down.
+    const messages = await openWebSocket({
+      host: `localhost:${devServerPort}`,
+      origin: malformedOrigin,
+    });
+
+    expect(messages).toContainEqual({
+      type: "error",
+      data: "Invalid Host/Origin header",
+    });
+
+    // The server must still be alive: a normal request still succeeds.
+    const res = await request("/main.js");
+
+    expect(res.status).toBe(200);
+  });
+
+  it("should reject a WebSocket upgrade with a malformed Host header", async () => {
+    // The `Host` is parsed before the `Origin`, on the same code path.
+    const messages = await openWebSocket({ host: malformedHost });
+
+    expect(messages).toContainEqual({
+      type: "error",
+      data: "Invalid Host/Origin header",
+    });
+
+    // The server must still be alive: a normal request still succeeds.
+    const res = await request("/main.js");
+
+    expect(res.status).toBe(200);
+  });
+
+  it("should reject a request with a malformed Host header", async () => {
+    const net = require("net");
+
+    // Sent over a raw socket so the malformed value reaches the server as-is.
+    const response = await new Promise((resolve, reject) => {
+      let raw = "";
+
+      const socket = net.connect(devServerPort, "localhost", () => {
+        socket.write(
+          [
+            "GET /main.js HTTP/1.1",
+            `Host: ${malformedHost}`,
+            "Connection: close",
+            "",
+            "",
+          ].join("\r\n")
+        );
+      });
+
+      socket.on("data", (chunk) => {
+        raw += chunk.toString();
+      });
+      socket.on("close", () => {
+        resolve(raw);
+      });
+      socket.on("error", reject);
+    });
+
+    // The host check answers the request instead of throwing, a thrown parser
+    // error would surface as a 500 from the express error handler.
+    expect(response).toMatch(/^HTTP\/1\.1 200 /);
+    expect(response).toContain("Invalid Host header");
+
+    // The server must still be alive: a normal request still succeeds.
+    const res = await request("/main.js");
+
+    expect(res.status).toBe(200);
+  });
+
+  it("should block a state-changing request with a malformed Origin header", async () => {
+    // The same-origin comparison used to throw on a malformed `Origin`, the
+    // request must simply be treated as cross-origin instead.
+    const res = await request("/webpack-dev-server/invalidate", {
+      origin: malformedOrigin,
+    });
+
+    expect(res.status).toBe(403);
+    expect(res.body).toBe("Cross-Origin request blocked");
+  });
+});
